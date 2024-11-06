@@ -1,0 +1,462 @@
+import numpy as np
+import pandas as pd
+from scipy.integrate import odeint
+from scipy.optimize import minimize
+import matplotlib.pyplot as plt
+from concurrent.futures import ProcessPoolExecutor
+import seaborn as sns
+from tqdm import tqdm
+from scipy import stats
+
+# Define the model 
+def model(y, t, params):
+    T, I, V, N = y
+    lambda_T, beta, delta, p, c, k, gamma = params
+    dTdt = lambda_T * T - beta * T * V
+    dIdt = beta * T * V - delta * I
+    dVdt = p * I - c * V - k * V * N
+    dNdt = V - gamma * N
+    return [dTdt, dIdt, dVdt, dNdt]
+
+# Load data 
+data_5J_CAL101_PBS = pd.read_csv('data_figure_5J_CAL101_PBS.CSV', header=0)
+data_5J_CAL101_VV = pd.read_csv('data_figure_5J_CAL101_VV.CSV', header=0)
+data_5J_VV = pd.read_csv('data_figure_5J_VV.CSV', header=0)
+
+# Define time points and experimental data for each dataset 
+time_5J_CAL101_PBS = data_5J_CAL101_PBS['Time'].values
+T_CAL101_PBS = data_5J_CAL101_PBS['Tumor Volume'].values
+
+time_5J_CAL101_VV = data_5J_CAL101_VV['Time'].values
+T_CAL101_VV = data_5J_CAL101_VV['Tumor Volume'].values
+
+time_5J_VV = data_5J_VV['Time'].values
+T_VV = data_5J_VV['Tumor Volume'].values
+
+# Initial conditions 
+initial_conditions_CAL101_PBS = [3.65, 0, 0, 1e5]  # [T0, I0, V0, N0] for CAL101+PBS
+initial_conditions_CAL101_VV = [3.65, 0, 1e8, 1e5]  # [T0, I0, V0, N0] for CAL101+VV
+initial_conditions_VV = [3.65, 0, 1e8, 1e5]  # [T0, I0, V0, N0] for VV
+
+# Virus injections 
+virus_injections = [8, 10, 12]
+
+def solve_ode_with_injections_5J_CAL101_PBS(initial_conditions, t, params, virus_injections):
+    results = []
+    t = [0, 6, 7, 9, 11, 13]
+    
+    t1 = [0, 6, 7, 8]  # keep 0, 6, 7
+    segment_sol = odeint(model, initial_conditions, t1, args=(params,))
+    results.append(segment_sol[:-1,:])
+    new_y0 = segment_sol[-1,:]
+    new_y0[2] = new_y0[2] + 1e8  # inject at day 8
+    
+    t2 = [8, 9, 10]  # keep 9
+    segment_sol2 = odeint(model, new_y0, t2, args=(params,))
+    results.append(segment_sol2[1:2,:])
+    new_y02 = segment_sol2[-1,:]
+    new_y02[2] = new_y02[2] + 1e8  # inject at day 10
+    
+    t3 = [10, 11, 12]  # keep 11
+    segment_sol3 = odeint(model, new_y02, t3, args=(params,))
+    results.append(segment_sol3[1:2,:])
+    new_y03 = segment_sol3[-1,:]
+    new_y03[2] = new_y03[2] + 1e8  # inject at day 12
+    
+    t4 = [12, 13]  # keep 13
+    segment_sol4 = odeint(model, new_y03, t4, args=(params,))
+    results.append(segment_sol4[1:,:])
+    
+    return np.vstack(results)
+
+def solve_ode_with_injections_5J_CAL101_VV(initial_conditions, t, params, virus_injections):
+    results = []
+    t = [0, 6, 7, 9, 11, 14, 16, 18]
+    
+    t1 = [0, 6, 7, 8]  # keep 0, 6, 7
+    segment_sol = odeint(model, initial_conditions, t1, args=(params,))
+    results.append(segment_sol[:-1,:])
+    new_y0 = segment_sol[-1,:]
+    new_y0[2] = new_y0[2] + 1e8  # inject at day 8
+    
+    t2 = [8, 9, 10]  # keep 9
+    segment_sol2 = odeint(model, new_y0, t2, args=(params,))
+    results.append(segment_sol2[1:2,:])
+    new_y02 = segment_sol2[-1,:]
+    new_y02[2] = new_y02[2] + 1e8  # inject at day 10
+    
+    t3 = [10, 11, 12]  # keep 11
+    segment_sol3 = odeint(model, new_y02, t3, args=(params,))
+    results.append(segment_sol3[1:2,:])
+    new_y03 = segment_sol3[-1,:]
+    new_y03[2] = new_y03[2] + 1e8  # inject at day 12
+    
+    t4 = [12, 14, 16, 18]  # keep rest
+    segment_sol4 = odeint(model, new_y03, t4, args=(params,))
+    results.append(segment_sol4[1:,:])
+    
+    return np.vstack(results)
+
+def solve_ode_with_injections_5J_VV(initial_conditions, t, params, virus_injections):
+    results = []
+    t = [0, 6, 7, 9, 11, 13, 14, 16]
+    
+    t1 = [0, 6, 7, 8]  # keep 0, 6, 7
+    segment_sol = odeint(model, initial_conditions, t1, args=(params,))
+    results.append(segment_sol[:-1,:])
+    new_y0 = segment_sol[-1,:]
+    new_y0[2] = new_y0[2] + 1e8  # inject at day 8
+    
+    t2 = [8, 9, 10]  # keep 9
+    segment_sol2 = odeint(model, new_y0, t2, args=(params,))
+    results.append(segment_sol2[1:2,:])
+    new_y02 = segment_sol2[-1,:]
+    new_y02[2] = new_y02[2] + 1e8  # inject at day 10
+    
+    t3 = [10, 11, 12]  # keep 11
+    segment_sol3 = odeint(model, new_y02, t3, args=(params,))
+    results.append(segment_sol3[1:2,:])
+    new_y03 = segment_sol3[-1,:]
+    new_y03[2] = new_y03[2] + 1e8  # inject at day 12
+    
+    t4 = [12, 13, 14, 16]  # keep rest
+    segment_sol4 = odeint(model, new_y03, t4, args=(params,))
+    results.append(segment_sol4[1:,:])
+    
+    return np.vstack(results)
+
+def objective_CAL101_PBS(params, initial_conditions, t, data, virus_injections):
+    params = 10 ** params
+    sol = solve_ode_with_injections_5J_CAL101_PBS(initial_conditions, t, params, virus_injections)
+    return np.sum((np.log10(sol[:, 0]+sol[:,1]) - np.log10(data)) ** 2)
+
+def objective_CAL101_VV(params, initial_conditions, t, data, virus_injections):
+    params = 10 ** params
+    sol = solve_ode_with_injections_5J_CAL101_VV(initial_conditions, t, params, virus_injections)
+    return np.sum((np.log10(sol[:, 0]+sol[:,1]) - np.log10(data)) ** 2)
+
+def objective_VV(params, initial_conditions, t, data, virus_injections):
+    params = 10 ** params
+    sol = solve_ode_with_injections_5J_VV(initial_conditions, t, params, virus_injections)
+    return np.sum((np.log10(sol[:, 0]+sol[:,1]) - np.log10(data)) ** 2)
+
+def generate_bootstrap_sample(data):
+    """Generate a bootstrap sample with replacement."""
+    indices = np.random.randint(0, len(data), size=len(data))
+    return indices
+
+def run_single_bootstrap(args):
+    """Run a single bootstrap iteration with improved error handling and parameter bounds."""
+    dataset_type, time_data, tumor_data, initial_conditions, initial_params = args
+    
+    try:
+        # Generate bootstrap sample
+        bootstrap_indices = np.random.randint(0, len(tumor_data), size=len(tumor_data))
+        bootstrap_time = time_data[bootstrap_indices]
+        bootstrap_tumor = tumor_data[bootstrap_indices]
+        
+        # Wider bounds for parameters (in log10 space)
+        bounds = [
+            (-3, 1),  # λ_T
+            (-10, 1), # β
+            (-3, 1),  # δ
+            (-3, 1),  # p
+            (-3, 1),  # c
+            (-10, 1), # k
+            (-3, 1),  # γ
+        ]
+        
+        # Add random noise to initial parameters
+        noise = np.random.normal(0, 0.1, len(initial_params))
+        noisy_params = np.log10(initial_params) + noise
+        
+        if dataset_type == 'CAL101+PBS':
+            result = minimize(objective_CAL101_PBS, 
+                            noisy_params,
+                            args=(initial_conditions, bootstrap_time, bootstrap_tumor, virus_injections),
+                            method='L-BFGS-B',
+                            bounds=bounds,
+                            options={'maxiter': 1000})
+        elif dataset_type == 'CAL101+VV':
+            result = minimize(objective_CAL101_VV,
+                            noisy_params,
+                            args=(initial_conditions, bootstrap_time, bootstrap_tumor, virus_injections),
+                            method='L-BFGS-B',
+                            bounds=bounds,
+                            options={'maxiter': 1000})
+        else:  # VV
+            result = minimize(objective_VV,
+                            noisy_params,
+                            args=(initial_conditions, bootstrap_time, bootstrap_tumor, virus_injections),
+                            method='L-BFGS-B',
+                            bounds=bounds,
+                            options={'maxiter': 1000})
+        
+        if not result.success:
+            return initial_params
+            
+        return 10 ** result.x
+        
+    except Exception as e:
+        print(f"Bootstrap iteration failed: {str(e)}")
+        return initial_params
+
+def run_bootstrap_analysis(n_bootstrap=1000):
+    """Run bootstrap analysis for all three datasets."""
+    # Prepare arguments for each dataset
+    cal101_pbs_args = [('CAL101+PBS', time_5J_CAL101_PBS, T_CAL101_PBS, initial_conditions_CAL101_PBS, fitted_params_CAL101_PBS) 
+                       for _ in range(n_bootstrap)]
+    cal101_vv_args = [('CAL101+VV', time_5J_CAL101_VV, T_CAL101_VV, initial_conditions_CAL101_VV, fitted_params_CAL101_VV) 
+                      for _ in range(n_bootstrap)]
+    vv_args = [('VV', time_5J_VV, T_VV, initial_conditions_VV, fitted_params_VV) 
+               for _ in range(n_bootstrap)]
+    
+    bootstrap_results_cal101_pbs = []
+    bootstrap_results_cal101_vv = []
+    bootstrap_results_vv = []
+    
+    with ProcessPoolExecutor() as executor:
+        print("Running CAL101+PBS bootstrap analysis...")
+        bootstrap_results_cal101_pbs = list(tqdm(executor.map(run_single_bootstrap, cal101_pbs_args), total=n_bootstrap))
+        
+        print("Running CAL101+VV bootstrap analysis...")
+        bootstrap_results_cal101_vv = list(tqdm(executor.map(run_single_bootstrap, cal101_vv_args), total=n_bootstrap))
+        
+        print("Running VV bootstrap analysis...")
+        bootstrap_results_vv = list(tqdm(executor.map(run_single_bootstrap, vv_args), total=n_bootstrap))
+    
+    # Convert results to numpy arrays
+    bootstrap_results_cal101_pbs = np.array([result for result in bootstrap_results_cal101_pbs if result is not None])
+    bootstrap_results_cal101_vv = np.array([result for result in bootstrap_results_cal101_vv if result is not None])
+    bootstrap_results_vv = np.array([result for result in bootstrap_results_vv if result is not None])
+    
+    return bootstrap_results_cal101_pbs, bootstrap_results_cal101_vv, bootstrap_results_vv
+
+def calculate_confidence_intervals(bootstrap_results):
+    """Calculate 95% confidence intervals with error checking."""
+    if len(bootstrap_results) == 0:
+        return np.zeros(7), np.zeros(7), np.zeros(7)
+    
+    lower = np.percentile(bootstrap_results, 2.5, axis=0)
+    upper = np.percentile(bootstrap_results, 97.5, axis=0)
+    median = np.median(bootstrap_results, axis=0)
+    return lower, median, upper
+
+def plot_bootstrap_results(bootstrap_results_cal101_pbs, bootstrap_results_cal101_vv, bootstrap_results_vv):
+    """Create parameter distribution plots with improved styling."""
+    param_names = ['λ_T', 'β', 'δ', 'p', 'c', 'k', 'γ']
+    
+    # Create figure with specific size and layout
+    fig = plt.figure(figsize=(12, 16))
+    plt.gcf().subplots_adjust(hspace=0.4, wspace=0.3)
+    
+    # Plot each parameter distribution
+    for i, param_name in enumerate(param_names):
+        plt.subplot(4, 2, i + 1)
+        
+        # Get data for current parameter
+        pbs_data = np.log10(bootstrap_results_cal101_pbs[:, i])
+        cal101_vv_data = np.log10(bootstrap_results_cal101_vv[:, i])
+        vv_data = np.log10(bootstrap_results_vv[:, i])
+        
+        # Plot distributions with better bandwidth selection
+        sns.kdeplot(data=pbs_data, color='blue', label='CAL101+PBS', 
+                   alpha=0.7, bw_adjust=0.5)
+        sns.kdeplot(data=cal101_vv_data, color='red', label='CAL101+VV', 
+                   alpha=0.7, bw_adjust=0.5)
+        sns.kdeplot(data=vv_data, color='green', label='VV', 
+                   alpha=0.7, bw_adjust=0.5)
+        
+        # Customize plot appearance
+        plt.grid(True, alpha=0.3, linestyle='--')
+        plt.title(f'Parameter {param_name}', fontsize=12, pad=10)
+        plt.xlabel('log10(value)', fontsize=10)
+        plt.ylabel('Density', fontsize=10)
+        
+        # Add legend
+        plt.legend(fontsize=8)
+        
+        # Set x-axis limits based on data range
+        data_min = min(pbs_data.min(), cal101_vv_data.min(), vv_data.min())
+        data_max = max(pbs_data.max(), cal101_vv_data.max(), vv_data.max())
+        margin = (data_max - data_min) * 0.2  # 20% margin
+        plt.xlim(data_min - margin, data_max + margin)
+        
+        # Remove top and right spines
+        max.spines['top'].set_visible(False)
+        max.spines['right'].set_visible(False)
+    
+    # Remove the last (empty) subplot
+    if len(param_names) < 8:
+        fig.delaxes(plt.subplot(4, 2, 8))
+    
+    return fig
+
+def perform_statistical_analysis(bootstrap_results_cal101_pbs, bootstrap_results_cal101_vv, bootstrap_results_vv, n_samples=10, n_iterations=100):
+    """
+    Perform statistical analysis on bootstrapped parameters using Kruskal-Wallis test and post-hoc analysis.
+    """
+    param_names = ['λ_T', 'β', 'δ', 'p', 'c', 'k', 'γ']
+    results = []
+    
+    for param_idx, param_name in enumerate(param_names):
+        kw_p_values = []
+        pairwise_p_values = {
+            'PBS_vs_CAL101VV': [],
+            'PBS_vs_VV': [],
+            'CAL101VV_vs_VV': []
+        }
+        
+        # Perform multiple iterations of sampling and testing
+        for _ in range(n_iterations):
+            # Randomly sample parameters from all conditions
+            pbs_sample = np.random.choice(bootstrap_results_cal101_pbs[:, param_idx], size=n_samples, replace=True)
+            cal101vv_sample = np.random.choice(bootstrap_results_cal101_vv[:, param_idx], size=n_samples, replace=True)
+            vv_sample = np.random.choice(bootstrap_results_vv[:, param_idx], size=n_samples, replace=True)
+            
+            try:
+                # Perform Kruskal-Wallis test
+                _, kw_p = stats.kruskal(pbs_sample, cal101vv_sample, vv_sample)
+                kw_p_values.append(kw_p)
+                
+                # Perform pairwise Mann-Whitney U tests
+                _, p_pbs_cal101vv = stats.mannwhitneyu(pbs_sample, cal101vv_sample, alternative='two-sided')
+                _, p_pbs_vv = stats.mannwhitneyu(pbs_sample, vv_sample, alternative='two-sided')
+                _, p_cal101vv_vv = stats.mannwhitneyu(cal101vv_sample, vv_sample, alternative='two-sided')
+                
+                pairwise_p_values['PBS_vs_CAL101VV'].append(p_pbs_cal101vv)
+                pairwise_p_values['PBS_vs_VV'].append(p_pbs_vv)
+                pairwise_p_values['CAL101VV_vs_VV'].append(p_cal101vv_vv)
+                
+            except Exception as e:
+                print(f"Warning: Test failed for parameter {param_name} - {str(e)}")
+                continue
+        
+        # Calculate summary statistics
+        if len(kw_p_values) > 0:
+            mean_kw_p = np.mean(kw_p_values)
+            significant_kw = np.sum(np.array(kw_p_values) < 0.05)
+            
+            results.append({
+                'Parameter': param_name,
+                'KW_Mean_p': mean_kw_p,
+                'KW_Significant_Rate': significant_kw / len(kw_p_values),
+                'PBS_vs_CAL101VV_p': np.mean(pairwise_p_values['PBS_vs_CAL101VV']),
+                'PBS_vs_VV_p': np.mean(pairwise_p_values['PBS_vs_VV']),
+                'CAL101VV_vs_VV_p': np.mean(pairwise_p_values['CAL101VV_vs_VV'])
+            })
+    
+    return pd.DataFrame(results)
+
+def format_statistical_results(results_df):
+    """Format statistical results for publication."""
+    formatted_df = results_df.copy()
+    
+    # Round numerical columns
+    formatted_df['KW_Mean_p'] = formatted_df['KW_Mean_p'].apply(lambda x: f"{x:.3f}")
+    formatted_df['KW_Significant_Rate'] = formatted_df['KW_Significant_Rate'].apply(lambda x: f"{x*100:.1f}%")
+    formatted_df['PBS_vs_CAL101VV_p'] = formatted_df['PBS_vs_CAL101VV_p'].apply(lambda x: f"{x:.3f}")
+    formatted_df['PBS_vs_VV_p'] = formatted_df['PBS_vs_VV_p'].apply(lambda x: f"{x:.3f}")
+    formatted_df['CAL101VV_vs_VV_p'] = formatted_df['CAL101VV_vs_VV_p'].apply(lambda x: f"{x:.3f}")
+    
+    return formatted_df
+
+if __name__ == "__main__":
+    # Initial parameters (assuming these are already optimized)
+    initial_params = [0.25, 1e-6, 0.15, 1e6, 0.05, 1e-2, 0.1]
+    
+    # Fit the models
+    result_CAL101_PBS = minimize(objective_CAL101_PBS, np.log10(initial_params), 
+                                args=(initial_conditions_CAL101_PBS, time_5J_CAL101_PBS, T_CAL101_PBS, virus_injections), 
+                                method='L-BFGS-B')
+    fitted_params_CAL101_PBS = 10 ** result_CAL101_PBS.x
+    SSR_CAL101_PBS = result_CAL101_PBS.fun
+
+    result_CAL101_VV = minimize(objective_CAL101_VV, np.log10(initial_params), 
+                               args=(initial_conditions_CAL101_VV, time_5J_CAL101_VV, T_CAL101_VV, virus_injections), 
+                               method='L-BFGS-B')
+    fitted_params_CAL101_VV = 10 ** result_CAL101_VV.x
+    SSR_CAL101_VV = result_CAL101_VV.fun
+
+    result_VV = minimize(objective_VV, np.log10(initial_params), 
+                        args=(initial_conditions_VV, time_5J_VV, T_VV, virus_injections), 
+                        method='L-BFGS-B')
+    fitted_params_VV = 10 ** result_VV.x
+    SSR_VV = result_VV.fun
+
+    # Run bootstrap analysis
+    print("\nStarting bootstrap analysis with 1000 iterations...")
+    bootstrap_results_cal101_pbs, bootstrap_results_cal101_vv, bootstrap_results_vv = run_bootstrap_analysis(n_bootstrap=1000)
+
+    # Create and display parameter distribution plots
+    fig = plot_bootstrap_results(bootstrap_results_cal101_pbs, bootstrap_results_cal101_vv, bootstrap_results_vv)
+    plt.tight_layout()
+    plt.show()
+
+    # Perform statistical analysis
+    print("\nPerforming statistical analysis...")
+    statistical_results = perform_statistical_analysis(
+        bootstrap_results_cal101_pbs,
+        bootstrap_results_cal101_vv,
+        bootstrap_results_vv,
+        n_samples=10,
+        n_iterations=100
+    )
+    
+    # Format and display results
+    formatted_results = format_statistical_results(statistical_results)
+    print("\nStatistical Analysis Results:")
+    print(formatted_results.to_string(index=False))
+    
+    # Save results to CSV
+    formatted_results.to_csv('5J_parameter_statistical_analysis.csv', index=False)
+    print("\nResults saved to '5J_parameter_statistical_analysis.csv'")
+
+    # Plot fitted curves with confidence intervals
+    plt.figure(figsize=(10, 6))
+    
+    # Generate ensemble predictions for CAL101+PBS
+    ensemble_predictions_cal101_pbs = np.zeros((len(time_5J_CAL101_PBS), len(bootstrap_results_cal101_pbs)))
+    for i, params in enumerate(bootstrap_results_cal101_pbs):
+        sol = solve_ode_with_injections_5J_CAL101_PBS(initial_conditions_CAL101_PBS, time_5J_CAL101_PBS, params, virus_injections)
+        ensemble_predictions_cal101_pbs[:, i] = sol[:, 0] + sol[:, 1]
+    
+    # Generate ensemble predictions for CAL101+VV
+    ensemble_predictions_cal101_vv = np.zeros((len(time_5J_CAL101_VV), len(bootstrap_results_cal101_vv)))
+    for i, params in enumerate(bootstrap_results_cal101_vv):
+        sol = solve_ode_with_injections_5J_CAL101_VV(initial_conditions_CAL101_VV, time_5J_CAL101_VV, params, virus_injections)
+        ensemble_predictions_cal101_vv[:, i] = sol[:, 0] + sol[:, 1]
+    
+    # Generate ensemble predictions for VV
+    ensemble_predictions_vv = np.zeros((len(time_5J_VV), len(bootstrap_results_vv)))
+    for i, params in enumerate(bootstrap_results_vv):
+        sol = solve_ode_with_injections_5J_VV(initial_conditions_VV, time_5J_VV, params, virus_injections)
+        ensemble_predictions_vv[:, i] = sol[:, 0] + sol[:, 1]
+    
+    # Plot experimental data and fitted curves with confidence intervals
+    plt.plot(time_5J_CAL101_PBS, T_CAL101_PBS, 'bo', label='CAL101+PBS Experimental')
+    plt.fill_between(time_5J_CAL101_PBS,
+                     np.percentile(ensemble_predictions_cal101_pbs, 2.5, axis=1),
+                     np.percentile(ensemble_predictions_cal101_pbs, 97.5, axis=1),
+                     color='blue', alpha=0.2)
+    
+    plt.plot(time_5J_CAL101_VV, T_CAL101_VV, 'ro', label='CAL101+VV Experimental')
+    plt.fill_between(time_5J_CAL101_VV,
+                     np.percentile(ensemble_predictions_cal101_vv, 2.5, axis=1),
+                     np.percentile(ensemble_predictions_cal101_vv, 97.5, axis=1),
+                     color='red', alpha=0.2)
+    
+    plt.plot(time_5J_VV, T_VV, 'go', label='VV Experimental')
+    plt.fill_between(time_5J_VV,
+                     np.percentile(ensemble_predictions_vv, 2.5, axis=1),
+                     np.percentile(ensemble_predictions_vv, 97.5, axis=1),
+                     color='green', alpha=0.2)
+    
+    plt.xlabel('Time (days)')
+    plt.ylabel('Tumor Volume (mm³)')
+    plt.yscale('log')
+    plt.title('Fitted Model with 95% Confidence Intervals (Figure 5J)')
+    plt.legend()
+    plt.grid(True)
+    plt.tight_layout()
+    plt.show()
