@@ -1,0 +1,466 @@
+import numpy as np
+import pandas as pd
+from scipy.integrate import odeint
+from scipy.optimize import minimize
+import matplotlib.pyplot as plt
+from concurrent.futures import ProcessPoolExecutor
+import seaborn as sns
+from tqdm import tqdm
+from scipy import stats
+
+# Define the model 
+def model(y, t, params):
+    T, I, V, N = y
+    lambda_T, beta, delta, p, c, k, gamma = params
+    dTdt = lambda_T * T - beta * T * V
+    dIdt = beta * T * V - delta * I
+    dVdt = p * I - c * V - k * V * N
+    dNdt = V - gamma * N
+    return [dTdt, dIdt, dVdt, dNdt]
+
+# Load data 
+data_4F_VV = pd.read_csv('data_figure_4F_VV.csv', header=0)
+data_4F_LY6G_VV = pd.read_csv('data_figure_4F_LY6G_VV.csv', header=0)
+
+# Define time points and experimental data for each dataset 
+time_4F_VV = data_4F_VV['Time'].values
+T_VV = data_4F_VV['Tumor Volume'].values
+
+time_4F_LY6G_VV = data_4F_LY6G_VV['Time'].values
+T_LY6G_VV = data_4F_LY6G_VV['Tumor Volume'].values
+
+# Adjusted initial conditions 
+initial_conditions_VV = [3.65, 0, 1e8, 1e5]  # [T0, I0, V0, N0] for Figure 4F (VV)
+initial_conditions_LY6G_VV = [3.65, 0, 1e8, 1e3]  # [T0, I0, V0, N0] for Figure 4F (LY6G+VV)
+
+# Updated fitted parameters
+fitted_params_VV = [6.64657418e-01, 1.13273875e-07, 2.44717725e-01, 1.00846111e+00,
+                   1.50423209e-01, 2.28583370e-06, 2.64146584e+00]
+fitted_params_LY6G_VV = [7.31966154e-01, 3.69631170e-09, 1.86502937e-01, 9.99952070e-02,
+                        1.33152722e-02, 1.45187504e-10, 2.62554561e-02]
+
+# Updated SSR values
+SSR_VV = 0.03499724469618436
+SSR_LY6G_VV = 0.08529569951379375
+
+# Virus injections 
+virus_injections = [8, 10, 12]
+
+# Function to solve ODE with segmented injections for VV
+def solve_ode_with_injections_vv(initial_conditions, t, params, virus_injections):
+    results = []
+    t = [0,7,8,10,11,12,14,15,16]
+    t1 = [0,7,8] #keep 0 and 7
+    segment_sol = odeint(model, initial_conditions, t1, args=(params,))
+    results.append(segment_sol[:-1,:])
+    new_y0 = segment_sol[-1,:]
+    new_y0[2]=new_y0[2]+1e8
+    
+    t2 = [8,10] #keep nothing
+    segment_sol2 = odeint(model, new_y0, t2, args=(params,))
+    new_y02 = segment_sol2[-1,:]
+    new_y02[2]=new_y02[2]+1e8
+
+    t3 = [10,11,12] #keep 11
+    segment_sol3 = odeint(model, new_y02, t3, args=(params,))
+    results.append(segment_sol3[1,:])
+    new_y03 = segment_sol3[-1,:]
+    new_y03[2]=new_y03[2]+1e8
+
+    t4 = [12,14,15,16] #keep 14 onwards
+    segment_sol4 = odeint(model, new_y03, t4, args=(params,))
+    results.append(segment_sol4[1:,:])
+
+    return np.vstack(results)
+
+# Function to solve ODE with segmented injections for LY6G+VV
+def solve_ode_with_injections_ly6g_vv(initial_conditions, t, params, virus_injections):
+    results = []
+    t = [0,7,8,10,11,12,14,15,16,18,19]
+    t1 = [0,7,8] #keep 0 and 7
+    segment_sol = odeint(model, initial_conditions, t1, args=(params,))
+    results.append(segment_sol[:-1,:])
+    new_y0 = segment_sol[-1,:]
+    new_y0[2]=new_y0[2]+1e8
+    
+    t2 = [8,10] #keep nothing
+    segment_sol2 = odeint(model, new_y0, t2, args=(params,))
+    new_y02 = segment_sol2[-1,:]
+    new_y02[2]=new_y02[2]+1e8
+
+    t3 = [10,11,12] #keep 11
+    segment_sol3 = odeint(model, new_y02, t3, args=(params,))
+    results.append(segment_sol3[1,:])
+    new_y03 = segment_sol3[-1,:]
+    new_y03[2]=new_y03[2]+1e8
+
+    t4 = [12,14,15,16,18,19] #keep 14 onwards
+    segment_sol4 = odeint(model, new_y03, t4, args=(params,))
+    results.append(segment_sol4[1:,:])
+
+    return np.vstack(results)
+
+# Objective function for VV
+def objective_vv(params, initial_conditions, t, data, virus_injections):
+    params = 10 ** params
+    sol = solve_ode_with_injections_vv(initial_conditions, t, params, virus_injections)
+    return np.sum((np.log10(sol[:, 0]+sol[:,1]) - np.log10(data)) ** 2)
+
+# Objective function for LY6G+VV
+def objective_ly6g_vv(params, initial_conditions, t, data, virus_injections):
+    params = 10 ** params
+    sol = solve_ode_with_injections_ly6g_vv(initial_conditions, t, params, virus_injections)
+    return np.sum((np.log10(sol[:, 0]+sol[:,1]) - np.log10(data)) ** 2)
+
+def generate_bootstrap_sample(data):
+    """Generate a bootstrap sample with replacement."""
+    indices = np.random.randint(0, len(data), size=len(data))
+    return indices
+
+def run_single_bootstrap(args):
+    """Modified bootstrap iteration with wider bounds and better error handling"""
+    dataset_type, time_data, tumor_data, initial_conditions, initial_params = args
+    
+    try:
+        # Generate bootstrap sample
+        bootstrap_indices = np.random.randint(0, len(tumor_data), size=len(tumor_data))
+        bootstrap_time = time_data[bootstrap_indices]
+        bootstrap_tumor = tumor_data[bootstrap_indices]
+        
+        # Wider bounds for parameters (in log10 space)
+        bounds = [
+            (-3, 1),  # λ_T
+            (-10, 1), # β
+            (-3, 1),  # δ
+            (-3, 1),  # p
+            (-3, 1),  # c
+            (-10, 1), # k
+            (-3, 1),  # γ
+        ]
+        
+        # Add random noise to initial parameters to increase variation
+        noise = np.random.normal(0, 0.1, len(initial_params))
+        noisy_params = np.log10(initial_params) + noise
+        
+        if dataset_type == 'VV':
+            result = minimize(objective_vv, 
+                            noisy_params, 
+                            args=(initial_conditions, bootstrap_time, bootstrap_tumor, virus_injections),
+                            method='L-BFGS-B',
+                            bounds=bounds,
+                            options={'maxiter': 1000})
+        else:  # LY6G+VV
+            result = minimize(objective_ly6g_vv, 
+                            noisy_params, 
+                            args=(initial_conditions, bootstrap_time, bootstrap_tumor, virus_injections),
+                            method='L-BFGS-B',
+                            bounds=bounds,
+                            options={'maxiter': 1000})
+        
+        if not result.success:
+            return initial_params
+            
+        return 10 ** result.x
+        
+    except Exception as e:
+        print(f"Bootstrap iteration failed: {str(e)}")
+        return initial_params
+
+def plot_bootstrap_results(bootstrap_results_vv, bootstrap_results_ly6g_vv):
+    """Create parameter distribution plots with improved styling"""
+    param_names = ['λ_T', 'β', 'δ', 'p', 'c', 'k', 'γ']
+    
+    # Create figure with specific size and layout
+    fig = plt.figure(figsize=(15, 12))
+    plt.gcf().subplots_adjust(hspace=0.4, wspace=0.3)
+    
+    # Plot each parameter distribution
+    for i, param_name in enumerate(param_names):
+        ax = plt.subplot(4, 2, i + 1)
+        
+        # Get data for current parameter
+        vv_data = np.log10(bootstrap_results_vv[:, i])
+        ly6g_data = np.log10(bootstrap_results_ly6g_vv[:, i])
+        
+        # Plot distributions with better bandwidth selection
+        sns.kdeplot(data=vv_data, color='red', label='VV', 
+                   alpha=0.7, bw_adjust=0.5)
+        sns.kdeplot(data=ly6g_data, color='green', label='LY6G+VV', 
+                   alpha=0.7, bw_adjust=0.5)
+        
+        # Customize plot appearance
+        plt.grid(True, alpha=0.3, linestyle='--')
+        plt.title(f'Parameter {param_name}', fontsize=12, pad=10)
+        plt.xlabel('log10(value)', fontsize=10)
+        plt.ylabel('Density', fontsize=10)
+        
+        # Add legend
+        plt.legend(fontsize=8)
+        
+        # Set x-axis limits based on data range
+        data_min = min(vv_data.min(), ly6g_data.min())
+        data_max = max(vv_data.max(), ly6g_data.max())
+        margin = (data_max - data_min) * 0.2  # 20% margin
+        plt.xlim(data_min - margin, data_max + margin)
+        
+        # Remove top and right spines
+        ax.spines['top'].set_visible(False)
+        ax.spines['right'].set_visible(False)
+    
+    # Remove the last (empty) subplot
+    if len(param_names) < 8:
+        fig.delaxes(plt.subplot(4, 2, 8))
+    
+    return fig
+
+def calculate_confidence_intervals(bootstrap_results):
+    """Calculate 95% confidence intervals with error checking."""
+    if len(bootstrap_results) == 0:
+        return np.zeros(7), np.zeros(7), np.zeros(7)
+    
+    lower = np.percentile(bootstrap_results, 2.5, axis=0)
+    upper = np.percentile(bootstrap_results, 97.5, axis=0)
+    median = np.median(bootstrap_results, axis=0)
+    return lower, median, upper
+
+def plot_bootstrap_results(bootstrap_results_vv, bootstrap_results_ly6g_vv):
+    """Create parameter distribution plots in the style of Figure 4F."""
+    param_names = ['λ_T', 'β', 'δ', 'p', 'c', 'k', 'γ']
+    
+    # Create figure with specific size and layout
+    fig = plt.figure(figsize=(12, 16))
+    plt.gcf().subplots_adjust(hspace=0.4, wspace=0.3)
+    
+    # Plot each parameter distribution
+    for i, param_name in enumerate(param_names):
+        plt.subplot(3, 3, i + 1)
+        
+        # Plot distributions with specific colors and transparency
+        sns.kdeplot(data=np.log10(bootstrap_results_vv[:, i]), 
+                   color='red', label='VV', alpha=0.7)
+        sns.kdeplot(data=np.log10(bootstrap_results_ly6g_vv[:, i]), 
+                   color='green', label='LY6G+VV', alpha=0.7)
+        
+        # Customize plot appearance
+        plt.grid(True, alpha=0.3, linestyle='--')
+        plt.title(f'Parameter {param_name}', fontsize=12, pad=10)
+        plt.xlabel('log10(value)', fontsize=10)
+        plt.ylabel('Density', fontsize=10)
+        
+        # Add legend to all plots
+        plt.legend(fontsize=8)
+        
+        # Set consistent axis limits based on data
+        plt.xlim(min(np.log10(bootstrap_results_vv[:, i]).min(), 
+                    np.log10(bootstrap_results_ly6g_vv[:, i]).min()) - 0.5,
+                max(np.log10(bootstrap_results_vv[:, i]).max(), 
+                    np.log10(bootstrap_results_ly6g_vv[:, i]).max()) + 0.5)
+    
+    # Remove the last (empty) subplot
+    if len(param_names) < 9:
+        fig.delaxes(plt.subplot(3, 3, 9))
+    
+    return fig
+
+def run_bootstrap_analysis(n_bootstrap, time_data_vv, tumor_data_vv, time_data_ly6g, tumor_data_ly6g):
+    """Run bootstrap analysis for both VV and LY6G+VV datasets."""
+    bootstrap_results_vv = []
+    bootstrap_results_ly6g_vv = []
+    
+    # Prepare arguments for parallel processing
+    vv_args = []
+    ly6g_args = []
+    
+    for _ in range(n_bootstrap):
+        vv_args.append(('VV', time_data_vv, tumor_data_vv, initial_conditions_VV, fitted_params_VV))
+        ly6g_args.append(('LY6G+VV', time_data_ly6g, tumor_data_ly6g, initial_conditions_LY6G_VV, fitted_params_LY6G_VV))
+    
+    # Run bootstrap iterations in parallel
+    print("Running VV bootstrap iterations...")
+    with ProcessPoolExecutor() as executor:
+        bootstrap_results_vv = list(tqdm(executor.map(run_single_bootstrap, vv_args), total=n_bootstrap))
+    
+    print("Running LY6G+VV bootstrap iterations...")
+    with ProcessPoolExecutor() as executor:
+        bootstrap_results_ly6g_vv = list(tqdm(executor.map(run_single_bootstrap, ly6g_args), total=n_bootstrap))
+    
+    # Convert results to numpy arrays
+    bootstrap_results_vv = np.array([result for result in bootstrap_results_vv if result is not None])
+    bootstrap_results_ly6g_vv = np.array([result for result in bootstrap_results_ly6g_vv if result is not None])
+    
+    return bootstrap_results_vv, bootstrap_results_ly6g_vv
+
+def perform_statistical_analysis(bootstrap_results_vv, bootstrap_results_ly6g_vv, n_samples=10, n_iterations=100):
+    """
+    Perform statistical analysis on bootstrapped parameters using Wilcoxon rank-sum test.
+    
+    Args:
+        bootstrap_results_vv: numpy array of VV bootstrap results
+        bootstrap_results_ly6g_vv: numpy array of LY6G+VV bootstrap results
+        n_samples: number of parameters to randomly sample for each test (default: 10)
+        n_iterations: number of test iterations to perform (default: 100)
+    
+    Returns:
+        DataFrame with statistical results
+    """
+    param_names = ['λ_T', 'β', 'δ', 'p', 'c', 'k', 'γ']
+    results = []
+    
+    for param_idx, param_name in enumerate(param_names):
+        p_values = []
+        
+        # Perform multiple iterations of sampling and testing
+        for _ in range(n_iterations):
+            # Randomly sample parameters from both conditions
+            vv_sample = np.random.choice(bootstrap_results_vv[:, param_idx], size=n_samples, replace=True)
+            ly6g_sample = np.random.choice(bootstrap_results_ly6g_vv[:, param_idx], size=n_samples, replace=True)
+            
+            # Perform Wilcoxon rank-sum test
+            try:
+                _, p_value = stats.ranksums(vv_sample, ly6g_sample)
+                p_values.append(p_value)
+            except Exception as e:
+                print(f"Warning: Test failed for parameter {param_name} - {str(e)}")
+                p_values.append(np.nan)
+        
+        # Calculate summary statistics
+        p_values = np.array(p_values)
+        valid_p_values = p_values[~np.isnan(p_values)]
+        
+        if len(valid_p_values) > 0:
+            mean_p = np.mean(valid_p_values)
+            median_p = np.median(valid_p_values)
+            std_p = np.std(valid_p_values)
+            significant_tests = np.sum(valid_p_values < 0.05)
+            total_valid_tests = len(valid_p_values)
+        else:
+            mean_p = np.nan
+            median_p = np.nan
+            std_p = np.nan
+            significant_tests = 0
+            total_valid_tests = 0
+            
+        results.append({
+            'Parameter': param_name,
+            'Mean p-value': mean_p,
+            'Median p-value': median_p,
+            'Std p-value': std_p,
+            'Significant Tests': significant_tests,
+            'Total Valid Tests': total_valid_tests,
+            'Significance Rate': significant_tests / total_valid_tests if total_valid_tests > 0 else np.nan
+        })
+    
+    return pd.DataFrame(results)
+
+def format_statistical_results(results_df):
+    """
+    Format statistical results into a publication-ready table.
+    
+    Args:
+        results_df: DataFrame containing statistical results
+        
+    Returns:
+        DataFrame formatted for publication
+    """
+    formatted_df = results_df.copy()
+    
+    # Round numerical columns
+    formatted_df['Mean p-value'] = formatted_df['Mean p-value'].apply(lambda x: f"{x:.3f}")
+    formatted_df['Median p-value'] = formatted_df['Median p-value'].apply(lambda x: f"{x:.3f}")
+    formatted_df['Std p-value'] = formatted_df['Std p-value'].apply(lambda x: f"{x:.3f}")
+    formatted_df['Significance Rate'] = formatted_df['Significance Rate'].apply(lambda x: f"{x*100:.1f}%")
+    
+    # Create significance summary column
+    formatted_df['Statistical Summary'] = formatted_df.apply(
+        lambda row: f"p = {row['Mean p-value']} ± {row['Std p-value']}\n"
+                   f"({row['Significant Tests']}/{row['Total Valid Tests']} tests significant)", 
+        axis=1
+    )
+    
+    # Select and rename columns for final table
+    final_df = formatted_df[['Parameter', 'Mean p-value', 'Std p-value', 'Significance Rate', 'Statistical Summary']]
+    final_df.columns = ['Parameter', 'Mean p-value', 'SD', 'Tests Significant', 'Summary']
+    
+    return final_df
+
+if __name__ == "__main__":
+    # Run the original fitting with existing parameters
+    sol_VV = solve_ode_with_injections_vv(initial_conditions_VV, time_4F_VV, fitted_params_VV, virus_injections)
+    sol_LY6G_VV = solve_ode_with_injections_ly6g_vv(initial_conditions_LY6G_VV, time_4F_LY6G_VV, fitted_params_LY6G_VV, virus_injections)
+
+    # Plot fitted curves
+    plt.figure(figsize=(10, 6))
+    
+    # Plot VV data and fitted curve
+    plt.plot(time_4F_VV, T_VV, 'ro', label='VV Experimental data')
+    plt.plot(time_4F_VV, sol_VV[:, 0] + sol_VV[:, 1], 'r-', label='VV Fitted curve')
+    
+    # Plot LY6G+VV data and fitted curve
+    plt.plot(time_4F_LY6G_VV, T_LY6G_VV, 'go', label='LY6G+VV Experimental data')
+    plt.plot(time_4F_LY6G_VV, sol_LY6G_VV[:, 0] + sol_LY6G_VV[:, 1], 'g-', label='LY6G+VV Fitted curve')
+    
+    plt.xlabel('Time (days)')
+    plt.ylabel('Tumor Volume (mm³)')
+    plt.yscale('log')
+    plt.title('Fitted Model (Figure 4F)')
+    plt.legend()
+    plt.grid(True)
+    plt.tight_layout()
+    plt.show()
+
+    # Run bootstrap analysis
+    print("\nStarting bootstrap analysis with 1000 iterations...")
+    bootstrap_results_vv, bootstrap_results_ly6g_vv = run_bootstrap_analysis(
+        n_bootstrap=1000,
+        time_data_vv=time_4F_VV,
+        tumor_data_vv=T_VV,
+        time_data_ly6g=time_4F_LY6G_VV,
+        tumor_data_ly6g=T_LY6G_VV
+    )
+
+    # Create and display parameter distribution plots
+    fig = plot_bootstrap_results(bootstrap_results_vv, bootstrap_results_ly6g_vv)
+    plt.tight_layout()
+    plt.show()
+
+    # Print parameter statistics
+    param_names = ['λ_T', 'β', 'δ', 'p', 'c', 'k', 'γ']
+    
+    print("\nParameter Statistics:")
+    for i, name in enumerate(param_names):
+        vv_lower, vv_median, vv_upper = calculate_confidence_intervals(bootstrap_results_vv[:, i])
+        ly6g_lower, ly6g_median, ly6g_upper = calculate_confidence_intervals(bootstrap_results_ly6g_vv[:, i])
+        
+        print(f"\n{name}:")
+        print(f"VV median: {vv_median:.2e} (95% CI: {vv_lower:.2e} - {vv_upper:.2e})")
+        print(f"LY6G+VV median: {ly6g_median:.2e} (95% CI: {ly6g_lower:.2e} - {ly6g_upper:.2e})")
+    
+    # Print original fitted parameters and SSR values
+    print("\nOriginal Fitted Parameters:")
+    print("\nVV Parameters:")
+    for i, name in enumerate(param_names):
+        print(f"{name}: {fitted_params_VV[i]:.2e}")
+    
+    print("\nLY6G+VV Parameters:")
+    for i, name in enumerate(param_names):
+        print(f"{name}: {fitted_params_LY6G_VV[i]:.2e}")
+    
+    print(f"\nVV SSR: {SSR_VV:.4f}")
+    print(f"LY6G+VV SSR: {SSR_LY6G_VV:.4f}")
+
+    print("\nPerforming statistical analysis...")
+    statistical_results = perform_statistical_analysis(
+        bootstrap_results_vv,
+        bootstrap_results_ly6g_vv,
+        n_samples=10,
+        n_iterations=100
+    )
+    
+    # Format and display results
+    formatted_results = format_statistical_results(statistical_results)
+    print("\nStatistical Analysis Results:")
+    print(formatted_results.to_string(index=False))
+    
+    # Save results to CSV
+    formatted_results.to_csv('parameter_statistical_analysis.csv', index=False)
+    print("\nResults saved to 'parameter_statistical_analysis.csv'")
